@@ -3027,9 +3027,9 @@ const showUpdateHold = updateHoldScreen.show
 async function waitForUpdateToFinish() {
   let announced = false
   let longWaitAnnounced = false
-  // Marker line 2 of the run this boot parked on: the result we report is that
-  // run's, never an older one (C2 started_at match).
-  let parkedRunStartedAt: number | null = null
+  // Stable across heartbeat refreshes, including when first opened mid-update.
+  // Keep line 2 only for compatibility with older result producers.
+  let parkedRun: { startedAt: number | null; runId: string | null } = { startedAt: null, runId: null }
   // A dead marker whose checkout a leftover process still holds (R6), or whose
   // ownership the helper could not establish: its state this poll, and since
   // when it has blocked this wait (the blocked screen's grace, R8 D3).
@@ -3041,7 +3041,7 @@ async function waitForUpdateToFinish() {
 
   const gateDeps = updateGateDeps({
     onLiveMarker: marker => {
-      parkedRunStartedAt = marker.startedAt
+      parkedRun = marker
       overridden = false
     },
     onHeld: state => {
@@ -3116,7 +3116,8 @@ async function waitForUpdateToFinish() {
   // failed: consumed once, here, where boot passes the update gate.
   reportHandoffResult({
     hermesHome: HERMES_HOME,
-    expectedStartedAt: parkedRunStartedAt,
+    expectedStartedAt: parkedRun.startedAt,
+    expectedRunId: parkedRun.runId,
     log: rememberLog,
     dialog,
     shell,

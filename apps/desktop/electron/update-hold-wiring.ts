@@ -34,7 +34,7 @@ export interface UpdateHoldWire {
 }
 
 export interface MarkerGateCallbacks {
-  onLiveMarker?: (marker: { startedAt: number | null }) => void
+  onLiveMarker?: (marker: { startedAt: number | null; runId: string | null }) => void
   onHeld?: (state: HeldState) => void
   onOverride?: (holdId: string) => void
 }
