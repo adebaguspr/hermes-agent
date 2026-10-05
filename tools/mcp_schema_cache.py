@@ -24,11 +24,24 @@ def _cache_path() -> Path:
     return get_hermes_home() / "cache" / _CACHE_FILENAME
 
 
+def _stable_executable_path(command: str | None) -> str | None:
+    """Resolve symlinks so a config written as `.../app/current/bin` fingerprints the same as the
+    live connect, which reports the resolved target (`.../app/0.2.102/bin`). Without this the cache
+    fingerprint never matches and lazy MCP registration is skipped on every startup."""
+    if not command or "/" not in command:
+        return command
+    try:
+        from pathlib import Path
+        return str(Path(command).resolve())
+    except Exception:
+        return command
+
+
 def config_fingerprint(config: dict) -> str:
     """Stable hash of the connection-defining parts of an MCP server config."""
     tools_filter = config.get("tools") or {}
     payload = {
-        "command": config.get("command"),
+        "command": _stable_executable_path(config.get("command")),
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),

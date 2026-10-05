@@ -160,6 +160,19 @@ def _warm_memory_provider_import(logger: logging.Logger) -> None:
         logger.debug("memory provider not warmed (none configured or import failed; agent init reports that)")
 
 
+def _start_background_acp_prewarm(logger: logging.Logger) -> None:
+    """Import heavy agent modules and model inventory in background so session/new answers quickly."""
+    def _prewarm() -> None:
+        try:
+            import run_agent  # noqa: F401
+            from acp_adapter.model_catalog import build_model_state  # noqa: F401
+        except Exception:
+            logger.debug("ACP background pre-warm failed", exc_info=True)
+
+    import threading
+    threading.Thread(target=_prewarm, name="acp-runtime-prewarm", daemon=True).start()
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -207,6 +220,8 @@ def main(argv: list[str] | None = None) -> None:
     # Previously this blocked asyncio.run() for 2-5 s. (ACP also registers per-session MCP servers
     # dynamically via asyncio.to_thread inside the event loop; that path is unaffected.)  Moved from
     # model_tools.py module scope to avoid freezing the gateway's loop on lazy import (#16856).
+    _start_background_acp_prewarm(logger)
+
     if os.environ.get("HERMES_ACP_SKIP_CONFIGURED_MCP", "").strip() != "1":
         try:
             from hermes_cli.mcp_startup import start_background_mcp_discovery

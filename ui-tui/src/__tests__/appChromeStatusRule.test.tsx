@@ -440,7 +440,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
     const element = StatusRule({ ...baseProps, cols: 160, usage: perfUsage })
     const rendered = textContent(element)
 
-    expect(rendered).toContain('◎ 87%')
+    expect(rendered).toContain('CH 87%')
     expect(rendered).toContain('◷ 3.2s')
     expect(rendered).toContain('↑ 50 t/s')
   })
@@ -464,7 +464,7 @@ describe('StatusRule perf read-outs (cache hit / latency / tps)', () => {
 
     const rendered = textContent(element)
 
-    expect(rendered).toContain('◎ 87%')
+    expect(rendered).toContain('CH 87%')
     expect(rendered).not.toContain('◷')
     expect(rendered).not.toContain('t/s')
   })

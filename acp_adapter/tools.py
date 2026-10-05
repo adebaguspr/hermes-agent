@@ -827,22 +827,30 @@ def build_tool_complete(
     else:
         content = _build_tool_complete_content(tool_name, result, function_args=function_args, snapshot=snapshot)
     structured = isinstance(_json_loads_maybe(result), (dict, list))
+    title = build_tool_title(tool_name, function_args or {})
+    locations = extract_locations(function_args or {}) if function_args else None
     return acp.update_tool_call(
-        tool_call_id, kind=get_tool_kind(tool_name),
+        tool_call_id, title=title, kind=get_tool_kind(tool_name),
         status="failed" if is_error or _tool_result_failed(result, tool_name) else "completed", content=content,
+        locations=locations,
         raw_output=None if tool_name in _POLISHED_TOOLS or structured else result,
+        raw_input=function_args,
     )
 
 
-def build_tool_abandoned(tool_call_id: str, tool_name: str) -> ToolCallProgress:
+def build_tool_abandoned(tool_call_id: str, tool_name: str, function_args: Optional[Args] = None) -> ToolCallProgress:
     """Create a ToolCallUpdate for a call that ended without ever reporting a result.
 
     A blocked or permission-denied call projects no ``tool.completed``, so the
     turn ends with its bubble still spinning; ``failed`` is the honest terminal
     state — the tool did not produce a result."""
+    title = build_tool_title(tool_name, function_args or {})
+    locations = extract_locations(function_args or {}) if function_args else None
     return acp.update_tool_call(
-        tool_call_id, kind=get_tool_kind(tool_name), status="failed",
+        tool_call_id, title=title, kind=get_tool_kind(tool_name), status="failed",
         content=[_text("This tool call ended without a result (blocked, denied, or interrupted).")],
+        locations=locations,
+        raw_input=function_args,
     )
 
 

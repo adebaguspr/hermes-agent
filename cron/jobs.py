@@ -3393,7 +3393,18 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
 
 
 def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+    """Save job output to file with strict clean plain markdown layout."""
+    import re
+    # Strip any stray HTML details/summary
+    output = re.sub(r'\s*---\s*<details>.*?<summary>.*?</summary>\s*(.*?)\s*</details>', r'\n\n## Prompt\n\n\\1', output, flags=re.DOTALL)
+    output = re.sub(r'<details>.*?</details>', '', output, flags=re.DOTALL)
+    # Strip bold asterisks from standard cron header fields
+    output = re.sub(r'# Cron Job: (.*?)\n', r'# \1\n', output)
+    output = output.replace('**Job ID:**', '- Job ID: `')
+    output = re.sub(r'- Job ID: `([0-9a-zA-Z_-]+)(?!`)', r'- Job ID: `\1`', output)
+    output = output.replace('**Run Time:**', '- Run Time:')
+    output = output.replace('**Mode:**', '- Mode:')
+    output = output.replace('**Status:**', '- Status:')
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     _ensure_cron_dir(job_output_dir)
@@ -3401,7 +3412,6 @@ def save_job_output(job_id: str, output: str):
     output_file = job_output_dir / f"{_hermes_now().strftime('%Y-%m-%d_%H-%M-%S')}.md"
     atomic_write_text(output_file, output, tmp_prefix=".output_", mode=0o600)
     _secure_file(output_file)
-    # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
     _prune_job_output(job_output_dir, _cron_output_keep())
     return output_file
 

@@ -235,13 +235,50 @@ class _ModelCatalog:
                 self.add(named_slug, named_model, named_model, " • ".join(part for part in parts if part))
 
 
+def _resolve_bare_custom_to_configured_slug(provider: str, base_url: str) -> str:
+    """Resolve a bare ``custom`` runtime provider to the configured ``providers:`` key it points at.
+
+    A named custom provider resolves to ``custom`` at runtime (``_named_custom_rung`` sets
+    ``provider="custom"`` by design), but inventory represents it by its raw config key
+    (``9router``). Left unresolved, ``custom`` is absent from the emitted rows, so
+    ``_append_unconfigured_rows`` appends a *second* skeleton row holding just the saved model -
+    the picker then shows a duplicate current entry (e.g. ``custom:9r.HIGH`` next to
+    ``custom:9router:9r.HIGH``) and ACP clients can time out on the ambiguity.
+
+    Match on the configured endpoint only, and only when the match is unambiguous; anything else
+    keeps the bare provider so genuinely credential-less ``custom`` sessions still get their
+    skeleton row.
+    """
+    raw_provider = str(provider or "").strip().lower()
+    if raw_provider != "custom":
+        return raw_provider
+    target = str(base_url or "").strip().rstrip("/").lower()
+    if not target:
+        return raw_provider
+    try:
+        from hermes_cli.config import load_config
+
+        providers = load_config().get("providers") or {}
+    except Exception:
+        return raw_provider
+    if not isinstance(providers, dict):
+        return raw_provider
+    matches = []
+    for key, entry in providers.items():
+        if not isinstance(entry, dict) or entry.get("enabled") is False:
+            continue
+        if str(entry.get("base_url") or "").strip().rstrip("/").lower() == target:
+            matches.append(str(key))
+    return matches[0] if len(matches) == 1 else raw_provider
+
+
 def build_model_state(model: str, provider: str, base_url: str) -> SessionModelState | None:
     """Picker state from the shared inventory + named endpoints; ``None`` when nothing is listable
     (caller falls back to a single current-model row). Raises on inventory failure."""
     from hermes_cli.inventory import build_models_payload, load_picker_context
     from hermes_cli.models import normalize_provider, provider_label
 
-    normalized_provider = normalize_provider(provider)
+    normalized_provider = normalize_provider(_resolve_bare_custom_to_configured_slug(provider, base_url))
     context = load_picker_context().with_overrides(
         current_provider=normalized_provider, current_model=model, current_base_url=base_url,
     )
@@ -253,7 +290,9 @@ def build_model_state(model: str, provider: str, base_url: str) -> SessionModelS
 
     named_catalogs = _named_custom_provider_catalogs()
     named_slugs = {str(slug).strip().lower() for slug, _label, _models in named_catalogs}
-    current_choice_provider = str(provider or "").strip().lower()
+    # ``provider`` may be the bare ``custom`` runtime label a named custom entry resolves to; use the
+    # configured key it points at so the current model id and the inventory row agree on one identity.
+    current_choice_provider = _resolve_bare_custom_to_configured_slug(provider, base_url)
     current_base = base_url.strip().rstrip("/").lower()
     # ``build_models_payload`` represents configured ``providers:`` entries by their raw
     # config key. ACP ids must instead use the durable ``custom:<key>`` identity so the

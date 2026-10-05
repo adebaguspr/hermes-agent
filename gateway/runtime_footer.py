@@ -73,17 +73,62 @@ def _format_latency(seconds: float) -> str:
     return f"{m}m{sec:02d}s"
 
 
+def _format_ctx_usage(used: int, total: Optional[int]) -> str:
+    """Compact usage: ``12k/200k``, ``87k/1M``. Skipped when total unknown."""
+    if not total or total <= 0 or used < 0:
+        return ""
+
+    def short(n: int) -> str:
+        # Tiered rounding: >=1M whole "M" (integer math, exact), >=10k whole "k"
+        # (integer math, exact), >=1k one decimal "k" via :.1f, but drop a redundant
+        # ".0" tail so exact multiples render "2k"/"10k" not "2.0k"/"10.0k". <1k raw.
+        # Never clamp against total.
+        if n >= 1_000_000:
+            return f"{(n + 500_000) // 1_000_000}M"
+        if n >= 10_000:
+            return f"{(n + 500) // 1_000}k"
+        if n >= 1_000:
+            s = f"{n / 1_000:.1f}"
+            if s.endswith(".0"):
+                s = s[:-2]
+            return s + "k"
+        return str(n)
+
+    return f"{short(used)}/{short(total)}"
+
+
 def format_runtime_footer(*, model: Optional[str], context_tokens: int,
                           context_length: Optional[int], cwd: Optional[str] = None,
                           turn_seconds: Optional[float] = None,
                           requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                          cached_tokens: Optional[int] = None,
                           fields: Iterable[str] = _DEFAULT_FIELDS) -> str:
     """Render the footer line, or "" if no fields have data. Fields whose data is missing (and
-    unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots."""
+    unknown field names) are skipped silently — a partial footer beats ``?%`` or empty slots.
+
+    Exception: ``cache_hit`` and ``ctx_usage`` ALWAYS render (``CH: 0%`` / ``0k/200k``) so a
+    zero/unknown reading is visible instead of vanishing — the absence was mistaken for a bug."""
     def context_pct() -> str:
         if context_length and context_length > 0 and context_tokens >= 0:
             return f"{max(0, min(100, round((context_tokens / context_length) * 100)))}%"
         return ""
+
+    def cache_hit() -> str:
+        # A zero-read regime hides the segment: "no cache data" must never be rendered as an
+        # alarming "CH: 0%". Two cases reach here with a zero numerator — (a) the provider does
+        # not report cache at all (9r.LOW returns no cached_tokens), (b) the call was a genuine
+        # cold start. Neither is a cache FAILURE, and a red 0% every other turn reads as one.
+        # Mirrors the CLI status bar contract (hermes_cli/cli_status_bar_mixin.py): show the
+        # ratio only when both sides carry data. Callers pass the PER-CALL pair, so the number
+        # reflects the current cache regime rather than a lifetime average.
+        hit = max(0, cached_tokens or 0)
+        total = context_tokens if context_tokens and context_tokens > 0 else 0
+        if not total or not hit:
+            return ""
+        return f"CH: {max(0, min(100, round(hit / total * 100)))}%"
+
+    def ctx_usage() -> str:
+        return _format_ctx_usage(max(0, context_tokens or 0), context_length)
 
     def served() -> str:
         requested = requested_model or model
@@ -96,17 +141,27 @@ def format_runtime_footer(*, model: Optional[str], context_tokens: int,
         "model": lambda: _model_short(model),
         "served_model": served,
         "context_pct": context_pct,
+        "cache_hit": cache_hit,
+        "ctx_usage": ctx_usage,
+        "ctx": lambda: _format_ctx_usage(context_tokens, context_length),
         # Skipped when the caller did not measure (None) or the value is negative.
         "latency": lambda: _format_latency(turn_seconds) if turn_seconds is not None and turn_seconds >= 0 else "",
         "cwd": lambda: _home_relative_cwd(cwd or _env_cwd()),
     }
-    return _SEP.join(v for field in fields if (render := renderers.get(field)) and (v := render()))
+    # ``ctx_usage`` always renders (even "0k/200k") so the context meter never vanishes; a
+    # zero READ on ``cache_hit`` is different — it means "no cache data this call", and forcing
+    # "CH: 0%" back in would repaint the very alarming reading the renderer just suppressed.
+    always = {"ctx_usage"}
+    return _SEP.join(v for field in fields if (render := renderers.get(field))
+                     and (v := render() or "")
+                     and (v or field in always))
 
 
 def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str | None,
                       model: Optional[str], context_tokens: int, context_length: Optional[int],
                       cwd: Optional[str] = None, turn_seconds: Optional[float] = None,
-                      requested_model: Optional[str] = None, served_model: Optional[str] = None) -> str:
+                      requested_model: Optional[str] = None, served_model: Optional[str] = None,
+                      cached_tokens: Optional[int] = None) -> str:
     """Entry point for gateway/run.py: footer text, or "" when disabled / no data. Callers append it
     to the final response themselves, preserving a single blank line of separation.
     ``turn_seconds`` is the caller-measured (``time.monotonic()``) run duration; ``None`` skips the
@@ -117,4 +172,5 @@ def build_footer_line(*, user_config: dict[str, Any] | None, platform_key: str |
     return format_runtime_footer(model=model, context_tokens=context_tokens,
                                  context_length=context_length, cwd=cwd, turn_seconds=turn_seconds,
                                  requested_model=requested_model, served_model=served_model,
+                                 cached_tokens=cached_tokens,
                                  fields=cfg.get("fields") or _DEFAULT_FIELDS)

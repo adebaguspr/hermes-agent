@@ -293,4 +293,128 @@ def record_response_usage(
             f"{cached:,}/{prompt:,} tokens "
             f"({hit_pct:.0f}% hit, {written:,} written)"
         )
+
+    _record_token_ledger(agent, response, canonical_usage, messages)
+
     return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
+
+
+def _record_token_ledger(
+    agent: Any,
+    response: Any,
+    canonical_usage: Any,
+    messages: List[Dict[str, Any]],
+) -> None:
+    """Durable append-only token ledger for observability and economics audits.
+    Never raises exceptions."""
+    try:
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly() or {}
+        telemetry_cfg = cfg.get("telemetry") or {}
+        if not telemetry_cfg.get("token_ledger", True):
+            return
+    except Exception:
+        # If config is unreachable, fail-open (leave ledger active)
+        pass
+
+    try:
+        import json
+        import os
+        from hermes_time import now as _hermes_now
+
+        logs_dir = os.path.expanduser("~/.hermes/logs")
+        os.makedirs(logs_dir, exist_ok=True)
+
+        local_now = _hermes_now()
+        date_str = local_now.strftime("%Y-%m-%d")
+        ledger_file = os.path.join(logs_dir, f"token-ledger-{date_str}.jsonl")
+
+        # Determine delegation role / id
+        deleg_val = "main"
+        if getattr(agent, "is_subagent", False) or getattr(agent, "_delegate_depth", 0) > 0:
+            deleg_val = str(getattr(agent, "_subagent_id", "") or getattr(agent, "subagent_id", "") or "subagent")
+        elif hasattr(agent, "platform") and agent.platform == "subagent":
+            deleg_val = str(getattr(agent, "_subagent_id", "") or getattr(agent, "subagent_id", "") or "subagent")
+
+        # Inspect raw response usage for cache stats
+        raw_u = getattr(response, "usage", None)
+        raw_dict = {}
+        if isinstance(raw_u, dict):
+            raw_dict = raw_u
+        elif hasattr(raw_u, "model_dump") and callable(raw_u.model_dump):
+            raw_dict = raw_u.model_dump()
+        elif hasattr(raw_u, "__dict__"):
+            raw_dict = vars(raw_u)
+
+        pt_details = raw_dict.get("prompt_tokens_details") or {}
+        if not isinstance(pt_details, dict) and hasattr(pt_details, "__dict__"):
+            pt_details = vars(pt_details)
+
+        cached_field_present = False
+        cached_tokens_val = 0
+
+        if isinstance(pt_details, dict) and "cached_tokens" in pt_details:
+            cached_field_present = True
+            cached_tokens_val = int(pt_details.get("cached_tokens") or 0)
+        elif "cached_tokens" in raw_dict:
+            cached_field_present = True
+            cached_tokens_val = int(raw_dict.get("cached_tokens") or 0)
+        elif "cache_read_input_tokens" in raw_dict:
+            cached_field_present = True
+            cached_tokens_val = int(raw_dict.get("cache_read_input_tokens") or 0)
+        elif getattr(canonical_usage, "cache_read_tokens", 0):
+            cached_field_present = True
+            cached_tokens_val = int(canonical_usage.cache_read_tokens)
+
+        cache_read_input_tokens_val = int(
+            raw_dict.get("cache_read_input_tokens")
+            or (pt_details.get("cached_tokens") if isinstance(pt_details, dict) else 0)
+            or getattr(canonical_usage, "cache_read_tokens", 0)
+            or 0
+        )
+        cache_creation_input_tokens_val = int(
+            raw_dict.get("cache_creation_input_tokens")
+            or getattr(canonical_usage, "cache_write_tokens", 0)
+            or 0
+        )
+
+        system_chars = 0
+        sys_prompt = getattr(agent, "_cached_system_prompt", None)
+        if isinstance(sys_prompt, str):
+            system_chars = len(sys_prompt)
+
+        tools_chars = 0
+        tools = getattr(agent, "tools", None)
+        if tools:
+            try:
+                tools_chars = len(json.dumps(tools))
+            except Exception:
+                pass
+
+        history_chars = 0
+        if messages:
+            try:
+                history_chars = sum(len(str(m.get("content", ""))) for m in messages if isinstance(m, dict))
+            except Exception:
+                pass
+
+        ledger_entry = {
+            "ts": local_now.isoformat(),
+            "model": str(getattr(agent, "model", "") or ""),
+            "deleg": deleg_val,
+            "prompt_tokens": int(getattr(canonical_usage, "prompt_tokens", 0) or 0),
+            "completion_tokens": int(getattr(canonical_usage, "output_tokens", 0) or 0),
+            "total_tokens": int(getattr(canonical_usage, "total_tokens", 0) or 0),
+            "cached_tokens": cached_tokens_val,
+            "cached_field_present": cached_field_present,
+            "cache_read_input_tokens": cache_read_input_tokens_val,
+            "cache_creation_input_tokens": cache_creation_input_tokens_val,
+            "system_chars": system_chars,
+            "tools_chars": tools_chars,
+            "history_chars": history_chars,
+        }
+
+        with open(ledger_file, "a", encoding="utf-8") as lf:
+            lf.write(json.dumps(ledger_entry) + chr(10))
+    except Exception:
+        pass

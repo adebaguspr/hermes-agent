@@ -703,6 +703,25 @@ def finalize_turn(
         "provider": agent.provider,
         "base_url": agent.base_url,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},
+        # Per-call cache reading for DISPLAY consumers (gateway runtime footer `CH: N%`).
+        # The session_* counters above are CUMULATIVE over the whole session; dividing one of
+        # them by `last_prompt_tokens` (a single call) yields a >100% ratio that min() clamps to
+        # a forever-stuck 100% (or 0% when the field is absent). The footer wants THIS call's
+        # cache_read/prompt pair, which is also what the "API call #N ... cache=X/Y (Z%)" log
+        # line reports. Keep the cumulative keys untouched — billing/status-bar read them.
+        "last_cache_read_tokens": (
+            (getattr(agent, "_last_turn_usage", None) or {}).get("cache_read_tokens")
+            if isinstance(getattr(agent, "_last_turn_usage", None), dict)
+            else None
+        ),
+        "last_turn_cache_hit_ratio": (
+            (
+                int((getattr(agent, "_last_turn_usage", None) or {}).get("cache_read_tokens") or 0)
+                / (((getattr(agent, "_last_turn_usage", None) or {}).get("prompt_tokens")) or 0)
+            )
+            if ((getattr(agent, "_last_turn_usage", None) or {}).get("prompt_tokens") or 0) > 0
+            else None
+        ),
         # Gateway SessionEntry persists an API reading, never the preflight display seed.
         "last_prompt_tokens": (
             getattr(agent.context_compressor, "last_real_prompt_tokens", agent.context_compressor.last_prompt_tokens)

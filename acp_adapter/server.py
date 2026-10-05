@@ -168,9 +168,13 @@ def _history_replay_updates(history: list[dict[str, Any]]):
 
 
 def _mcp_server_config(server: McpServerStdio | McpServerHttp | McpServerSse) -> dict:
+    # lazy=True: register tools from the schema cache and defer the real connect to the first tool
+    # call. ACP-injected servers (zeron & peers) answer tools/list with ttlMs:0, which otherwise
+    # forces a synchronous eager connect on every session/new and can breach Zeron's 10s timeout.
     if isinstance(server, McpServerStdio):
-        return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env}}
-    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}}
+        return {"command": server.command, "args": list(server.args), "env": {i.name: i.value for i in server.env},
+                "lazy": True}
+    return {"url": server.url, "headers": {i.name: i.value for i in server.headers}, "lazy": True}
 
 
 def _restore_env(key: str, value: str | None) -> None:

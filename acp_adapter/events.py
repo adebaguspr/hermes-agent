@@ -107,8 +107,8 @@ def flush_open_tool_calls(
     flushed = 0
     for name, ids in open_calls:
         for tc_id in ids:
-            tool_call_meta.pop(tc_id, None)
-            _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name))
+            meta = tool_call_meta.pop(tc_id, None) or {}
+            _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name, function_args=meta.get("args")))
             flushed += 1
         tool_call_ids.pop(name, None)
     if flushed:
